@@ -1,7 +1,4 @@
 import NextAuth from "next-auth"
-import GitHub from "next-auth/providers/github"
-import Google from "next-auth/providers/google"
-import { DrizzleAdapter } from "@auth/drizzle-adapter"
 import { createDb, Db } from "./db"
 import { accounts, users, roles, userRoles } from "./schema"
 import { eq } from "drizzle-orm"
@@ -11,8 +8,8 @@ import CredentialsProvider from "next-auth/providers/credentials"
 import { hashPassword, comparePassword } from "@/lib/utils"
 import { authSchema, AuthSchema } from "@/lib/validation"
 import { generateAvatarUrl } from "./avatar"
-import { getUserId } from "./apiKey"
 import { verifyTurnstileToken } from "./turnstile"
+import { headers } from "next/headers"
 
 const ROLE_DESCRIPTIONS: Record<Role, string> = {
   [ROLES.EMPEROR]: "皇帝（网站所有者）",
@@ -74,7 +71,11 @@ export async function getUserRole(userId: string) {
 }
 
 export async function checkPermission(permission: Permission) {
-  const userId = await getUserId()
+  const headersList = await headers()
+  const requestUserId = headersList.get("X-User-Id")
+
+  const session = requestUserId ? null : await auth()
+  const userId = requestUserId || session?.user.id
 
   if (!userId) return false
 
@@ -93,23 +94,8 @@ export const {
   auth,
   signIn,
   signOut
-} = NextAuth(() => ({
-  secret: process.env.AUTH_SECRET,
-  adapter: DrizzleAdapter(createDb(), {
-    usersTable: users,
-    accountsTable: accounts,
-  }),
-  providers: [
-    GitHub({
-      clientId: process.env.AUTH_GITHUB_ID,
-      clientSecret: process.env.AUTH_GITHUB_SECRET,
-      allowDangerousEmailAccountLinking: true,
-    }),
-    Google({
-      clientId: process.env.AUTH_GOOGLE_ID,
-      clientSecret: process.env.AUTH_GOOGLE_SECRET,
-      allowDangerousEmailAccountLinking: true,
-    }),
+} = NextAuth(() => {
+  const providers = [
     CredentialsProvider({
       name: "Credentials",
       credentials: {
@@ -160,7 +146,11 @@ export const {
         }
       },
     }),
-  ],
+  ]
+
+  return {
+  secret: process.env.AUTH_SECRET,
+  providers,
   events: {
     async signIn({ user }) {
       if (!user.id) return
@@ -233,7 +223,8 @@ export const {
   session: {
     strategy: "jwt",
   },
-}))
+  }
+})
 
 export async function register(username: string, password: string) {
   const db = createDb()

@@ -1,10 +1,7 @@
-import { auth } from "@/lib/auth"
 import { NextResponse } from "next/server"
 import { i18n, type Locale } from "@/i18n/config"
 import { PERMISSIONS } from "@/lib/permissions"
-import { checkPermission } from "@/lib/auth"
 import { Permission } from "@/lib/permissions"
-import { handleApiKeyAuth } from "@/lib/apiKey"
 
 const API_PERMISSIONS: Record<string, Permission> = {
   '/api/emails': PERMISSIONS.MANAGE_EMAIL,
@@ -26,9 +23,11 @@ export async function middleware(request: Request) {
     request.headers.delete("X-User-Id")
     const apiKey = request.headers.get("X-API-Key")
     if (apiKey) {
+      const { handleApiKeyAuth } = await import("@/lib/apiKey")
       return handleApiKeyAuth(apiKey, pathname)
     }
 
+    const { auth, checkPermission } = await import("@/lib/auth")
     const session = await auth()
     if (!session?.user) {
       return NextResponse.json(
@@ -130,7 +129,7 @@ function matchLocale(lang: string): Locale | null {
 
 export const config = {
   matcher: [
-    '/((?!_next|.*\\..*).*)', // all pages excluding static assets
+    '/((?!api/auth|_next|.*\\..*).*)', // all pages excluding static assets and auth routes
     '/api/emails/:path*',
     '/api/webhook/:path*',
     '/api/roles/:path*',

@@ -15,6 +15,22 @@ interface WranglerConfig {
   d1_databases: D1Database[]
 }
 
+const runCommand = async (command: string) => {
+  try {
+    await execAsync(command)
+  } catch (error) {
+    if (error && typeof error === 'object' && 'stdout' in error && typeof error.stdout === 'string' && error.stdout.trim()) {
+      console.error(error.stdout)
+    }
+
+    if (error && typeof error === 'object' && 'stderr' in error && typeof error.stderr === 'string' && error.stderr.trim()) {
+      console.error(error.stderr)
+    }
+
+    throw error
+  }
+}
+
 async function migrate() {
   try {
     // Get command line arguments
@@ -50,11 +66,11 @@ async function migrate() {
 
     // Generate migrations
     console.log('Generating migrations...')
-    await execAsync('drizzle-kit generate')
+    await runCommand('pnpm exec drizzle-kit generate')
     
     // Applying migrations
     console.log(`Applying migrations to ${mode} database: ${dbName}`)
-    await execAsync(`wrangler d1 migrations apply ${dbName} --${mode}`)
+    await runCommand(`pnpm exec wrangler d1 migrations apply ${dbName} --${mode} --config wrangler.json`)
 
     console.log('Migration completed successfully!')
   } catch (error) {

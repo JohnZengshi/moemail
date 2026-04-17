@@ -21,6 +21,7 @@ export async function POST(request: Request) {
     const { username, password, turnstileToken } = json
 
     const verification = await verifyTurnstileToken(turnstileToken)
+
     if (!verification.success) {
       const message = verification.reason === "missing-token"
         ? "请先完成安全验证"
@@ -29,12 +30,26 @@ export async function POST(request: Request) {
     }
 
     const user = await register(username, password)
+    const safeUser = {
+      ...user,
+      password: undefined,
+    }
 
-    return NextResponse.json({ user })
+    return NextResponse.json({ user: safeUser })
   } catch (error) {
+    if (error instanceof Error) {
+      const isDuplicateUsername = error.message === "用户名已存在"
+        || /UNIQUE constraint failed: user\.username/i.test(error.message)
+
+      if (isDuplicateUsername) {
+        return NextResponse.json({ error: "用户名已存在" }, { status: 409 })
+      }
+    }
+
+    console.error("Register route error:", error)
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : "注册失败" },
+      { error: "注册失败" },
       { status: 500 }
     )
   }
-} 
+}

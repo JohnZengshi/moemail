@@ -20,6 +20,17 @@ interface ConfigStore {
   fetch: () => Promise<void>
 }
 
+function parseEmailDomains(value: string | undefined): string[] {
+  if (!value) return ["moemail.app"]
+
+  const domains = value
+    .split(',')
+    .map(domain => domain.trim().replace(/^@+/, "").toLowerCase())
+    .filter(Boolean)
+
+  return domains.length ? domains : ["moemail.app"]
+}
+
 const useConfigStore = create<ConfigStore>((set) => ({
   config: null,
   loading: false,
@@ -30,11 +41,13 @@ const useConfigStore = create<ConfigStore>((set) => ({
       const res = await fetch("/api/config")
       if (!res.ok) throw new Error("获取配置失败")
       const data = await res.json() as Config
+      const emailDomainsArray = parseEmailDomains(data.emailDomains)
+
       set({
         config: {
           defaultRole: data.defaultRole || ROLES.CIVILIAN,
-          emailDomains: data.emailDomains,
-          emailDomainsArray: data.emailDomains.split(','),
+          emailDomains: emailDomainsArray.join(','),
+          emailDomainsArray,
           adminContact: data.adminContact || "",
           maxEmails: Number(data.maxEmails) || EMAIL_CONFIG.MAX_ACTIVE_EMAILS
         },
@@ -59,4 +72,4 @@ export function useConfig() {
   }, [store.config, store.loading])
 
   return store
-} 
+}

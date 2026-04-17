@@ -18,17 +18,70 @@ const KV_NAMESPACE_NAME = process.env.KV_NAMESPACE_NAME || "moemail-kv";
 const CUSTOM_DOMAIN = process.env.CUSTOM_DOMAIN;
 const KV_NAMESPACE_ID = process.env.KV_NAMESPACE_ID;
 
+const readWranglerConfig = () => {
+  const wranglerPath = resolve("wrangler.json");
+  if (!existsSync(wranglerPath)) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(readFileSync(wranglerPath, "utf-8"));
+  } catch {
+    return null;
+  }
+};
+
+const getConfiguredDatabaseId = () => {
+  const config = readWranglerConfig();
+  return config?.d1_databases?.[0]?.database_id as string | undefined;
+};
+
+const getConfiguredKVNamespaceId = () => {
+  const config = readWranglerConfig();
+  return config?.kv_namespaces?.[0]?.id as string | undefined;
+};
+
+const isCloudflareAuthError = (error: unknown) => {
+  if (!error || typeof error !== "object") return false;
+
+  const status = "status" in error ? (error.status as number | undefined) : undefined;
+  if (status === 401 || status === 403) return true;
+
+  if ("errors" in error && Array.isArray(error.errors)) {
+    return error.errors.some((item: unknown) => {
+      if (!item || typeof item !== "object") return false;
+      return "code" in item && item.code === 10000;
+    });
+  }
+
+  return false;
+};
+
+const runWranglerCommandWithOAuth = (command: string) => {
+  execSync(command, {
+    stdio: "inherit",
+    env: {
+      ...process.env,
+      CLOUDFLARE_API_TOKEN: "",
+    },
+  });
+};
+
 /**
  * 验证必要的环境变量
  */
 const validateEnvironment = () => {
-  const requiredEnvVars = ["CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN"];
+  const requiredEnvVars = ["CLOUDFLARE_ACCOUNT_ID"];
   const missing = requiredEnvVars.filter((varName) => !process.env[varName]);
 
   if (missing.length > 0) {
     throw new Error(
       `Missing required environment variables: ${missing.join(", ")}`
     );
+  }
+
+  if (!process.env.CLOUDFLARE_API_TOKEN) {
+    console.log("⚠️ CLOUDFLARE_API_TOKEN is empty, Wrangler OAuth session will be used for CLI commands.");
   }
 };
 
@@ -173,6 +226,14 @@ const checkAndCreateDatabase = async () => {
     updateDatabaseConfig(database.uuid);
     console.log(`✅ Database "${DATABASE_NAME}" already exists (ID: ${database.uuid})`);
   } catch (error) {
+    if (isCloudflareAuthError(error)) {
+      const configuredDatabaseId = getConfiguredDatabaseId();
+      if (configuredDatabaseId) {
+        console.log(`⚠️ Cloudflare API token cannot access D1 API. Using existing wrangler.json database_id: ${configuredDatabaseId}`);
+        return;
+      }
+    }
+
     if (error instanceof NotFoundError) {
       console.log(`⚠️ Database not found, creating new database...`);
       try {
@@ -225,11 +286,15 @@ const checkAndCreateKVNamespace = async () => {
     let namespace;
 
     const namespaceList = await getKVNamespaceList();
-    namespace = namespaceList.find(ns => ns.title === KV_NAMESPACE_NAME);
+    const acceptedTitles = [
+      KV_NAMESPACE_NAME,
+      `${PROJECT_NAME}-${KV_NAMESPACE_NAME}`,
+    ];
+    namespace = namespaceList.find(ns => acceptedTitles.includes(ns.title));
 
     if (namespace && namespace.id) {
       updateKVConfig(namespace.id);
-      console.log(`✅ KV namespace "${KV_NAMESPACE_NAME}" found by name (ID: ${namespace.id})`);
+      console.log(`✅ KV namespace "${namespace.title}" found (ID: ${namespace.id})`);
     } else {
       console.log("⚠️ KV namespace not found by name, creating new KV namespace...");
       namespace = await createKVNamespace();
@@ -237,6 +302,14 @@ const checkAndCreateKVNamespace = async () => {
       console.log(`✅ KV namespace "${KV_NAMESPACE_NAME}" created successfully (ID: ${namespace.id})`);
     }
   } catch (error) {
+    if (isCloudflareAuthError(error)) {
+      const configuredNamespaceId = getConfiguredKVNamespaceId();
+      if (configuredNamespaceId) {
+        console.log(`⚠️ Cloudflare API token cannot manage KV namespaces. Using existing wrangler.json KV id: ${configuredNamespaceId}`);
+        return;
+      }
+    }
+
     console.error(`❌ An error occurred while checking the KV namespace:`, error);
     throw error;
   }
@@ -252,6 +325,11 @@ const checkAndCreatePages = async () => {
     await getPages();
     console.log("✅ Project already exists, proceeding with update...");
   } catch (error) {
+    if (isCloudflareAuthError(error)) {
+      console.log("⚠️ Cloudflare API token cannot access Pages API. Skipping project check and relying on Wrangler OAuth during deploy.");
+      return;
+    }
+
     if (error instanceof NotFoundError) {
       console.log("⚠️ Project not found, creating new project...");
       const pages = await createPages();
@@ -338,7 +416,11 @@ const pushPagesSecret = () => {
 
     // 使用临时文件推送secrets
     execSync(`pnpm dlx wrangler pages secret bulk ${runtimeEnvFile}`, { 
-      stdio: "inherit" 
+      stdio: "inherit",
+      env: {
+        ...process.env,
+        CLOUDFLARE_API_TOKEN: "",
+      },
     });
 
     // 清理临时文件
@@ -370,7 +452,7 @@ const pushPagesSecret = () => {
 const deployPages = () => {
   console.log("🚧 Deploying to Cloudflare Pages...");
   try {
-    execSync("pnpm run deploy:pages", { stdio: "inherit" });
+    runWranglerCommandWithOAuth("pnpm run deploy:pages");
     console.log("✅ Pages deployment completed successfully");
   } catch (error) {
     console.error("❌ Pages deployment failed:", error);
@@ -384,7 +466,7 @@ const deployPages = () => {
 const deployEmailWorker = () => {
   console.log("🚧 Deploying Email Worker...");
   try {
-    execSync("pnpm dlx wrangler deploy --config wrangler.email.json", { stdio: "inherit" });
+    runWranglerCommandWithOAuth("pnpm dlx wrangler deploy --config wrangler.email.json");
     console.log("✅ Email Worker deployed successfully");
   } catch (error) {
     console.error("❌ Email Worker deployment failed:", error);
@@ -398,7 +480,7 @@ const deployEmailWorker = () => {
 const deployCleanupWorker = () => {
   console.log("🚧 Deploying Cleanup Worker...");
   try {
-    execSync("pnpm dlx wrangler deploy --config wrangler.cleanup.json", { stdio: "inherit" });
+    runWranglerCommandWithOAuth("pnpm dlx wrangler deploy --config wrangler.cleanup.json");
     console.log("✅ Cleanup Worker deployed successfully");
   } catch (error) {
     console.error("❌ Cleanup Worker deployment failed:", error);
